@@ -2,5 +2,5 @@
 Simple program for speed your download files. 
 
 
-![GitHub Logo](/images/buffalo-downloader.PNG)
+![buffalo-downloader](/images/buffalo-downloader.PNG)
 Format: ![Alt Text](url)
