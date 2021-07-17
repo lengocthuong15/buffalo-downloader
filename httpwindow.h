@@ -113,15 +113,18 @@ public:
 public slots:
     void readyRead();
     void doneRead();
+    void cancle_download_slot();
 signals:
     void download_done(const QString &fileName);
     void reply_progress(qint64 bytesRead);
+    void cancle_download_signal();
 
 protected:
     QNetworkAccessManager qnam;
     REQUEST_PARAM rqParam;
     TEMP_FILE tempFile;
     QNetworkReply *reply;
+    bool isCancle = false;
 };
 
 
@@ -141,6 +144,7 @@ private:
 signals:
     void download_progress_signal(qint64 bytesRead, qint64 totalBytes);
     void download_done_signal();
+    void cancle_signal();
 
 private slots:
     void downloadFile();

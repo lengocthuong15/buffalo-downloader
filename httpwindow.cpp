@@ -51,6 +51,7 @@
 #include <QtWidgets>
 #include <QtNetwork>
 #include <QUrl>
+#include <QHttp2Configuration>
 
 #include "httpwindow.h"
 #include "ui_authenticationdialog.h"
@@ -96,10 +97,16 @@ DownloadWorker::DownloadWorker(const REQUEST_PARAM &rqParam, TEMP_FILE &tempFile
 }
 
 void DownloadWorker::readyRead() {
-    qDebug() << "File: " << tempFile.file->fileName() << "_ Thread: " << QThread::currentThreadId();
+    if (this->isCancle) {
+        qDebug() << "Ready read but the requested is cancled";
+        return;
+    }
+    qint64 readByte = reply->bytesAvailable();
+    qDebug() << "ReadyRead - byteAvailable: " << readByte;
     if (tempFile.file) {
         tempFile.file->write(reply->readAll());
     }
+    emit reply_progress(readByte);
 }
 
 void DownloadWorker::doneRead() {
@@ -108,28 +115,44 @@ void DownloadWorker::doneRead() {
     }
 }
 
+void DownloadWorker::cancle_download_slot() {
+    this->isCancle = true;
+    this->reply->abort();
+    qDebug() << "DownloadWorker Cancle download: " << tempFile.file->fileName();
+    if (tempFile.file) {
+        tempFile.file->close();
+        tempFile.file->remove();
+        delete tempFile.file;
+        tempFile.file = nullptr;
+    }
+    emit cancle_download_signal();
+}
+
 void DownloadWorker::run() {
     QNetworkRequest request(rqParam.url);
     request.setAttribute(QNetworkRequest::HTTP2AllowedAttribute, QVariant(true));
+    request.setAttribute(QNetworkRequest::HTTP2WasUsedAttribute, QVariant(true));
     QString concatenated = QStringLiteral("%1:%2").arg(rqParam.user, rqParam.password);
     QByteArray data = concatenated.toLocal8Bit().toBase64();
     QString headerData = "Basic " + data;
     request.setRawHeader("Authorization", headerData.toLocal8Bit());
     QString rangeHeader = QStringLiteral("bytes=%1-%2").arg(rqParam.start).arg(rqParam.end);
     request.setRawHeader("Range", rangeHeader.toLocal8Bit());
+    QHttp2Configuration http2Config = request.http2Configuration();
+    http2Config.setMaxFrameSize(65536);
+    request.setHttp2Configuration(http2Config);
     this->reply = qnam.get(request);
     QEventLoop waitingLoop;
     QObject::connect(reply, &QNetworkReply::finished, &waitingLoop, &QEventLoop::quit);
+    //QObject::connect(this, &DownloadWorker::cancle_download_signal, &waitingLoop, &QEventLoop::quit);
     //QObject::connect(reply, &QNetworkReply::downloadProgress, this, &DownloadWorker::reply_progress);
 
-        QObject::connect(reply, &QNetworkReply::readyRead, [&](){
-            quint64 readByte = reply->bytesAvailable();
-            qDebug() << "ReadyRead - byteAvailable: " << readByte;
-            tempFile.file->write(reply->readAll());
-            emit reply_progress(readByte);
-        });
+    QObject::connect(reply, &QNetworkReply::readyRead, this, &DownloadWorker::readyRead);
     waitingLoop.exec();
-    emit download_done(tempFile.file->fileName());
+    if (!this->isCancle) {
+        qDebug() << "Download done: " << tempFile.file->fileName();
+        emit download_done(tempFile.file->fileName());
+    }
 }
 
 HttpWindow::HttpWindow(QWidget *parent)
@@ -164,7 +187,7 @@ HttpWindow::HttpWindow(QWidget *parent)
     connect(urlLineEdit, &QLineEdit::textChanged,
         this, &HttpWindow::enableDownloadButton);
     formLayout->addRow(tr("&URL:"), urlLineEdit);
-    QString downloadDirectory = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+    QString downloadDirectory = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
     if (downloadDirectory.isEmpty() || !QFileInfo(downloadDirectory).isDir())
         downloadDirectory = QDir::currentPath();
     downloadDirectoryLineEdit->setText(QDir::toNativeSeparators(downloadDirectory));
@@ -229,6 +252,9 @@ quint64 HttpWindow::getContentLength(const QUrl &requestedUrl)
     QByteArray data = concatenated.toLocal8Bit().toBase64();
     QString headerData = "Basic " + data;
     request.setRawHeader("Authorization", headerData.toLocal8Bit());
+    QHttp2Configuration http2Config = request.http2Configuration();
+    http2Config.setMaxFrameSize(65536);
+    request.setHttp2Configuration(http2Config);
     reply = qnam->head(request);
     QEventLoop eventLoop;
     QObject::connect(reply, SIGNAL(finished()), &eventLoop, SLOT(quit()));
@@ -262,23 +288,28 @@ void HttpWindow::startRequest(const QUrl &requestedUrl)
     currentBytes = 0;
     url = requestedUrl;
     httpRequestAborted = false;
-    QNetworkRequest request(url);
-    request.setAttribute(QNetworkRequest::HTTP2AllowedAttribute, QVariant(true));
     QString user = userNameEdit->text();
     QString password = passEdit->text();
-    QString concatenated = QStringLiteral("%1:%2").arg(user, password);
-    QByteArray data = concatenated.toLocal8Bit().toBase64();
-    QString headerData = "Basic " + data;
-    request.setRawHeader("Authorization", headerData.toLocal8Bit());
-    reply = qnam->head(request);
-    connect(reply, &QNetworkReply::finished, this, &HttpWindow::httpFinished);
-    connect(reply, &QIODevice::readyRead, this, &HttpWindow::httpReadyRead);
+    //QNetworkRequest request(url);
+    //request.setAttribute(QNetworkRequest::HTTP2AllowedAttribute, QVariant(true));
+    //request.setAttribute(QNetworkRequest::HTTP2WasUsedAttribute, QVariant(true));
+    //QHttp2Configuration http2Config = request.http2Configuration();
+
+    //QString concatenated = QStringLiteral("%1:%2").arg(user, password);
+    //QByteArray data = concatenated.toLocal8Bit().toBase64();
+    //QString headerData = "Basic " + data;
+    //request.setRawHeader("Authorization", headerData.toLocal8Bit());
+    //reply = qnam->head(request);
+    //connect(reply, &QNetworkReply::finished, this, &HttpWindow::httpFinished);
+    //connect(reply, &QIODevice::readyRead, this, &HttpWindow::httpReadyRead);
 
     ProgressDialog *progressDialog = new ProgressDialog(url, this);
     progressDialog->setAttribute(Qt::WA_DeleteOnClose);
-    //connect(progressDialog, &QProgressDialog::canceled, this, &HttpWindow::cancelDownload);
+    connect(progressDialog, &QProgressDialog::canceled, this, &HttpWindow::cancelDownload);
     connect(this, &HttpWindow::download_progress_signal, progressDialog, &ProgressDialog::networkReplyProgress);
     connect(this, &HttpWindow::download_done_signal, progressDialog, &ProgressDialog::hide);
+    connect(this, &HttpWindow::cancle_signal, progressDialog, &ProgressDialog::close);
+    //connect(this, &HttpWindow::cancle_signal, progressDialog, &ProgressDialog::hide);
     progressDialog->show();
 
     statusLabel->setText(tr("Downloading %1...").arg(url.toString()));
@@ -303,6 +334,7 @@ void HttpWindow::startRequest(const QUrl &requestedUrl)
 
         DownloadWorker *worker = new DownloadWorker(rqParam, item);
         connect(worker, &DownloadWorker::download_done, this, &HttpWindow::rebuildFile);
+        connect(this, &HttpWindow::cancle_signal, worker, &DownloadWorker::cancle_download_slot);
         connect(worker, &DownloadWorker::reply_progress, this, &HttpWindow::download_progress);
         connect(worker, &QThread::finished, worker, &QThread::deleteLater, Qt::QueuedConnection);
 
@@ -393,13 +425,26 @@ QFile *HttpWindow::openFileForRead(const QString &fileName) {
 
 void HttpWindow::cancelDownload()
 {
+    if (this->httpRequestAborted) {
+        qDebug() << "The request is already cancled";
+        return;
+    }
+    qDebug() << "Cancle download: " << this->file->fileName();
     statusLabel->setText(tr("Download canceled."));
     httpRequestAborted = true;
-    reply->abort();
+    //reply->abort();
     downloadButton->setEnabled(true);
+    if (this->file) {
+        file->close();
+        file->remove();
+        delete file;
+        file = nullptr;
+    }
+    emit cancle_signal();
 }
 
 void HttpWindow::rebuildFile(const QString &fileName) {
+    qDebug() << "Rebuild file";
     int count = 0;
     int size = filePools.size();
     for (auto &item : filePools) {
@@ -425,6 +470,7 @@ void HttpWindow::rebuildFile(const QString &fileName) {
         filePools.clear();
         file->close();
         delete file;
+        file = nullptr;
         emit download_done_signal();
     }
 }
@@ -527,6 +573,11 @@ void HttpWindow::slotAuthenticationRequired(QNetworkReply *, QAuthenticator *aut
 }
 
 void HttpWindow::download_progress(qint64 bytesRead) {
+   qDebug() << "HttpWindow download_progress " << bytesRead;
+   if (this->httpRequestAborted) {
+       qDebug() << "HttpWindow download_progress: Request is cancled";
+       return;
+   }
    currentBytes += bytesRead;
    emit download_progress_signal(currentBytes, this->totalBytes);
 }
