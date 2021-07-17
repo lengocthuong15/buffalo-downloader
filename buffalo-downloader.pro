@@ -8,3 +8,4 @@ FORMS += authenticationdialog.ui
 # install
 target.path = $$[QT_INSTALL_EXAMPLES]/network/http
 INSTALLS += target
+RC_ICONS = images/buffalo-downloader.ico
